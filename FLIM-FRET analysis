@@ -1,0 +1,61 @@
+library(ggplot2)
+library(dunn.test)
+library(multcompView)
+library(dplyr)
+
+# Ensure df is a data.frame and Treatment is a factor
+df <- as.data.frame(df)
+df$Treatment <- as.factor(df$Treatment)
+
+# Map long treatment names to short codes (T1, T2, ...)
+treatments <- levels(df$Treatment)
+short_names <- paste0("T", seq_along(treatments))
+name_map <- setNames(short_names, treatments)
+df$Treatment_code <- name_map[df$Treatment]
+
+# Kruskal-Wallis test (use proper formula syntax)
+kruskal_result <- kruskal.test(FLIM_FRET_efficiency_pc ~ Treatment_code, data = df)
+print(kruskal_result)
+
+# Dunn post-hoc test on short codes
+dunn_result <- dunn.test(df$FLIM_FRET_efficiency_pc,
+                         df$Treatment_code,
+                         method = "bonferroni",
+                         list = TRUE)
+
+# Assign proper names to P.adjusted for multcompLetters
+dunn_result$comparisons <- gsub(" ", "", dunn_result$comparisons)  # remove spaces
+names(dunn_result$P.adjusted) <- dunn_result$comparisons
+
+# Generate significance letters
+letters_short <- multcompLetters(dunn_result$P.adjusted)$Letters
+
+# Create letters dataframe and map back to original Treatment names
+letters_df <- data.frame(
+  Treatment_code = short_names,
+  Letters = letters_short[short_names]
+)
+letters_df$Treatment <- treatments
+
+# Compute max y per Treatment for plotting letters
+y_max <- df %>%
+  group_by(Treatment) %>%
+  summarize(y = max(FLIM_FRET_efficiency_pc, na.rm = TRUE)) %>%
+  left_join(letters_df, by = "Treatment")
+
+# Plot violin with jitter, letters, and rotated X-axis labels
+ggplot(df, aes(x = Treatment, y = FLIM_FRET_efficiency_pc, fill = Treatment)) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_boxplot(width = 0.1, outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 1.5, alpha = 0.8) +
+  geom_text(data = y_max, aes(x = Treatment, y = y + 2, label = Letters), inherit.aes = FALSE, size = 5) +
+  theme_minimal() +
+  labs(
+    title = "Violin plot of FLIM-FRET efficiency by Treatment",
+    y = "FLIM-FRET efficiency (%)",
+    x = "Treatment"
+  ) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate X-axis labels
+  )
