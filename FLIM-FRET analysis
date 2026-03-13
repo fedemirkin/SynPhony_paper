@@ -1,54 +1,64 @@
-library(ggplot2)
-library(dunn.test)
-library(multcompView)
-library(dplyr)
+# -------------------------------
+# Complete pipeline: log shift + ANOVA + Tukey + violin plot
+# -------------------------------
 
-# Ensure df is a data.frame and Treatment is a factor
+# 1️⃣ Install and load packages
+packages <- c("ggplot2", "dunn.test", "multcompView", "dplyr")
+for (pkg in packages) {
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg, dependencies = TRUE)
+    library(pkg, character.only = TRUE)
+  }
+}
+
+# 2️⃣ Prepare data
 df <- as.data.frame(df)
 df$Treatment <- as.factor(df$Treatment)
+df$Exp <- as.factor(df$Exp)
 
-# Map long treatment names to short codes (T1, T2, ...)
+# Shift data to make all values positive for log transform
+min_val <- min(df$FLIM_FRET_efficiency_pc, na.rm = TRUE)
+df$FLIM_shift <- df$FLIM_FRET_efficiency_pc + abs(min_val) + 1
+df$FLIM_log <- log(df$FLIM_shift)
+
+# 3️⃣ ANOVA on log-transformed data
+anova_log <- aov(FLIM_log ~ Treatment, data = df)
+summary(anova_log)
+
+# 4️⃣ Tukey post-hoc test
+tukey <- TukeyHSD(anova_log)
+
+# 5️⃣ Generate significance letters from Tukey results
+tukey_letters <- multcompLetters(tukey$Treatment[, "p adj"])$Letters
+
+# Map letters to treatments
 treatments <- levels(df$Treatment)
-short_names <- paste0("T", seq_along(treatments))
-name_map <- setNames(short_names, treatments)
-df$Treatment_code <- name_map[df$Treatment]
-
-# Kruskal-Wallis test (use proper formula syntax)
-kruskal_result <- kruskal.test(FLIM_FRET_efficiency_pc ~ Treatment_code, data = df)
-print(kruskal_result)
-
-# Dunn post-hoc test on short codes
-dunn_result <- dunn.test(df$FLIM_FRET_efficiency_pc,
-                         df$Treatment_code,
-                         method = "bonferroni",
-                         list = TRUE)
-
-# Assign proper names to P.adjusted for multcompLetters
-dunn_result$comparisons <- gsub(" ", "", dunn_result$comparisons)  # remove spaces
-names(dunn_result$P.adjusted) <- dunn_result$comparisons
-
-# Generate significance letters
-letters_short <- multcompLetters(dunn_result$P.adjusted)$Letters
-
-# Create letters dataframe and map back to original Treatment names
 letters_df <- data.frame(
-  Treatment_code = short_names,
-  Letters = letters_short[short_names]
+  Treatment = treatments,
+  Letters = tukey_letters[treatments]
 )
-letters_df$Treatment <- treatments
 
-# Compute max y per Treatment for plotting letters
+# 6️⃣ Compute max y per Treatment for plotting letters
 y_max <- df %>%
   group_by(Treatment) %>%
   summarize(y = max(FLIM_FRET_efficiency_pc, na.rm = TRUE)) %>%
   left_join(letters_df, by = "Treatment")
 
-# Plot violin with jitter, letters, and rotated X-axis labels
+# 7️⃣ Map long treatment names to short codes for clarity (optional)
+short_names <- paste0("T", seq_along(treatments))
+name_map <- setNames(short_names, treatments)
+df$Treatment_code <- name_map[df$Treatment]
+
+# 8️⃣ Plot violin with jittered points (semi-transparent) and Tukey letters
 ggplot(df, aes(x = Treatment, y = FLIM_FRET_efficiency_pc, fill = Treatment)) +
   geom_violin(trim = FALSE, alpha = 0.6) +
   geom_boxplot(width = 0.1, outlier.shape = NA) +
-  geom_jitter(width = 0.15, size = 1.5, alpha = 0.8) +
-  geom_text(data = y_max, aes(x = Treatment, y = y + 2, label = Letters), inherit.aes = FALSE, size = 5) +
+  geom_jitter(aes(shape = Exp), width = 0.15, size = 2, alpha = 0.5, color = "black") +
+  geom_text(data = y_max,
+            aes(x = Treatment, y = y + max(df$FLIM_FRET_efficiency_pc) * 0.05, label = Letters),
+            inherit.aes = FALSE,
+            size = 5) +
+  scale_shape_manual(values = c("1" = 16, "2" = 17), name = "Experiment") +
   theme_minimal() +
   labs(
     title = "Violin plot of FLIM-FRET efficiency by Treatment",
@@ -56,6 +66,6 @@ ggplot(df, aes(x = Treatment, y = FLIM_FRET_efficiency_pc, fill = Treatment)) +
     x = "Treatment"
   ) +
   theme(
-    legend.position = "none",
-    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate X-axis labels
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)
   )
