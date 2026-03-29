@@ -1,0 +1,8 @@
+#TRIM MSTA from FoldMason using trimal
+trimal -in input_alignment.fasta -out output_alignment_trimmed.fasta -gt 0.65
+#Make tree with IQ-tree
+#!/bin/bash
+#SBATCH -p jic-medium
+#SBATCH -c 4
+#REPLACE MSA.fa for the actual name of the file
+iqtree2 -s MSA.fa -m MFP -T AUTO -B 1000
