@@ -1,0 +1,4 @@
+foldmason easy-msa FOLDER/ OUTPUT_FILE_NAMES tmp --mask-bfactor-threshold 50 --match-ratio 0.7 --filter-msa 1 --diff 300 --gap-open aa:40,nucl:40 --gap-extend aa:1,nucl:2 --guide-tree Y --recompute-scores 1 --refine-iters 500 --pair-threshold 0.05 --report-paths 0 --report-mode 1
+
+#Replace FOLDER/ for name of the folder with the files
+#Replace OUTPUT_FILE_NAMES for the name of the common name of the output files
