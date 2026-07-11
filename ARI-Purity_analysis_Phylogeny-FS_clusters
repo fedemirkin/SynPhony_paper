@@ -1,0 +1,240 @@
+############################################################
+# ABC clades vs Foldseek clusters
+# Final summary output version
+############################################################
+
+
+#-----------------------------------------------------------
+# Packages
+#-----------------------------------------------------------
+
+# install.packages("mclust")
+# install.packages("pheatmap")
+
+library(mclust)
+library(pheatmap)
+
+
+#-----------------------------------------------------------
+# Prepare data
+#-----------------------------------------------------------
+
+metadata$Assigned_clade <- factor(metadata$Assigned_clade)
+metadata$Cluster_number_e5 <- factor(metadata$Cluster_number_e5)
+
+
+# Optional: order clades numerically
+metadata$Assigned_clade <- factor(
+  metadata$Assigned_clade,
+  levels = paste0("Clade_", 1:11)
+)
+
+
+#-----------------------------------------------------------
+# Functions
+#-----------------------------------------------------------
+
+weighted_purity <- function(clades, clusters){
+
+  tab <- table(clades, clusters)
+
+  cluster_sizes <- colSums(tab)
+
+  purity <- apply(tab, 2, function(x){
+
+    max(x) / sum(x)
+
+  })
+
+  weighted.mean(
+    purity,
+    w = cluster_sizes
+  )
+}
+
+
+#-----------------------------------------------------------
+# Settings
+#-----------------------------------------------------------
+
+set.seed(123)
+
+B <- 10000
+
+
+
+#===========================================================
+# FULL DATASET
+#===========================================================
+
+# ARI
+
+ari_full <- adjustedRandIndex(
+  metadata$Assigned_clade,
+  metadata$Cluster_number_e5
+)
+
+
+# ARI permutation
+
+ari_null_full <- replicate(B, {
+
+  adjustedRandIndex(
+    sample(metadata$Assigned_clade),
+    metadata$Cluster_number_e5
+  )
+
+})
+
+p_ari_full <- 
+  (sum(ari_null_full >= ari_full) + 1)/(B + 1)
+
+
+
+# Purity
+
+purity_full <- weighted_purity(
+  metadata$Assigned_clade,
+  metadata$Cluster_number_e5
+)
+
+
+
+# Purity permutation
+
+purity_null_full <- replicate(B, {
+
+  weighted_purity(
+    sample(metadata$Assigned_clade),
+    metadata$Cluster_number_e5
+  )
+
+})
+
+
+p_purity_full <-
+  (sum(purity_null_full >= purity_full) + 1)/(B + 1)
+
+
+
+#===========================================================
+# REMOVE SINGLETON FOLDSEEK CLUSTERS
+#===========================================================
+
+
+cluster_sizes <- table(metadata$Cluster_number_e5)
+
+
+metadata_no_singletons <- metadata[
+  metadata$Cluster_number_e5 %in%
+    names(cluster_sizes[cluster_sizes > 1]),
+]
+
+
+# ARI
+
+ari_no_singletons <- adjustedRandIndex(
+  metadata_no_singletons$Assigned_clade,
+  metadata_no_singletons$Cluster_number_e5
+)
+
+
+
+# ARI permutation
+
+ari_null_no_singletons <- replicate(B, {
+
+  adjustedRandIndex(
+    sample(metadata_no_singletons$Assigned_clade),
+    metadata_no_singletons$Cluster_number_e5
+  )
+
+})
+
+
+p_ari_no_singletons <-
+  (sum(ari_null_no_singletons >= ari_no_singletons) + 1)/(B + 1)
+
+
+
+# Purity
+
+purity_no_singletons <- weighted_purity(
+  metadata_no_singletons$Assigned_clade,
+  metadata_no_singletons$Cluster_number_e5
+)
+
+
+
+#===========================================================
+# HEATMAP
+#===========================================================
+
+tab <- table(
+  metadata$Assigned_clade,
+  metadata$Cluster_number_e5
+)
+
+tab_prop <- prop.table(tab, margin = 1)
+
+
+pheatmap(
+  tab_prop,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  display_numbers = TRUE,
+  number_format = "%.2f",
+  main = "Foldseek cluster distribution by ABC clade"
+)
+
+
+
+#===========================================================
+# FINAL SUMMARY TABLE
+#===========================================================
+
+
+results <- data.frame(
+
+  Analysis = c(
+    "All clusters",
+    "All clusters",
+    "All clusters",
+    "All clusters",
+    "Without singleton clusters",
+    "Without singleton clusters",
+    "Without singleton clusters",
+    "Without singleton clusters"
+  ),
+
+  Metric = c(
+    "ARI",
+    "ARI permutation P",
+    "Weighted purity",
+    "Purity permutation P",
+    "Proteins retained",
+    "Foldseek clusters retained",
+    "ARI",
+    "ARI permutation P"
+  ),
+
+  Value = c(
+    ari_full,
+    p_ari_full,
+    purity_full,
+    p_purity_full,
+    nrow(metadata_no_singletons),
+    length(unique(metadata_no_singletons$Cluster_number_e5)),
+    ari_no_singletons,
+    p_ari_no_singletons
+  )
+
+)
+
+
+print(results)
+
+
+############################################################
+# END
+############################################################
