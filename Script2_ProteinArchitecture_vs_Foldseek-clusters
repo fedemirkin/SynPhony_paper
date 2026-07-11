@@ -1,0 +1,415 @@
+############################################################
+# SCRIPT 2
+# Protein architecture vs Foldseek cluster
+############################################################
+
+
+############################
+# Load packages
+############################
+
+library(mclust)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+
+
+############################
+# Create architecture
+############################
+
+architecture_table <- metadata %>%
+  
+  dplyr::arrange(
+    Truncated_name,
+    Domain_order
+  ) %>%
+  
+  dplyr::group_by(
+    Truncated_name
+  ) %>%
+  
+  dplyr::summarise(
+    
+    Architecture = paste(
+      paste0(
+        Domain_order,
+        ":",
+        Assigned_clade
+      ),
+      collapse="|"
+    ),
+    
+    Cluster_number_e5 = first(
+      Cluster_number_e5
+    ),
+    
+    .groups="drop"
+    
+  )
+
+
+
+############################
+# Weighted purity function
+############################
+
+weighted_purity <- function(x,y){
+  
+  tab <- table(x,y)
+  
+  max_per_row <- apply(
+    tab,
+    1,
+    max
+  )
+  
+  sum(max_per_row) / sum(tab)
+  
+}
+
+
+
+############################
+# Permutation test function
+############################
+
+permutation_test <- function(
+    x,
+    y,
+    metric="ARI",
+    nperm=10000
+){
+  
+  observed <- if(metric=="ARI"){
+    
+    adjustedRandIndex(
+      x,
+      y
+    )
+    
+  } else {
+    
+    weighted_purity(
+      x,
+      y
+    )
+    
+  }
+  
+  
+  perm_values <- numeric(nperm)
+  
+  
+  for(i in 1:nperm){
+    
+    y_perm <- sample(y)
+    
+    perm_values[i] <- if(metric=="ARI"){
+      
+      adjustedRandIndex(
+        x,
+        y_perm
+      )
+      
+    } else {
+      
+      weighted_purity(
+        x,
+        y_perm
+      )
+      
+    }
+    
+  }
+  
+  
+  p_value <- (
+    sum(
+      perm_values >= observed
+    ) + 1
+  )/(nperm+1)
+  
+  
+  return(
+    p_value
+  )
+  
+}
+
+
+
+############################
+# ARI and purity analysis
+############################
+
+
+ARI_architecture <- adjustedRandIndex(
+  
+  architecture_table$Architecture,
+  architecture_table$Cluster_number_e5
+  
+)
+
+
+ARI_p_architecture <- permutation_test(
+  
+  architecture_table$Architecture,
+  architecture_table$Cluster_number_e5,
+  metric="ARI"
+  
+)
+
+
+purity_architecture <- weighted_purity(
+  
+  architecture_table$Architecture,
+  architecture_table$Cluster_number_e5
+  
+)
+
+
+purity_p_architecture <- permutation_test(
+  
+  architecture_table$Architecture,
+  architecture_table$Cluster_number_e5,
+  metric="purity"
+  
+)
+
+
+
+############################
+# Results table
+############################
+
+script2_results <- data.frame(
+
+Metric=c(
+  
+"Adjusted Rand Index",
+"ARI permutation P",
+"Weighted purity",
+"Purity permutation P"
+
+),
+
+Value=c(
+  
+ARI_architecture,
+ARI_p_architecture,
+purity_architecture,
+purity_p_architecture
+  
+)
+
+)
+
+
+
+############################
+# Architecture frequencies
+############################
+
+Architecture_frequency <- architecture_table %>%
+  
+  dplyr::count(
+    Architecture,
+    name="Number_of_proteins"
+  ) %>%
+  
+  dplyr::arrange(
+    desc(Number_of_proteins)
+  )
+
+
+
+############################
+# Architecture x Foldseek
+############################
+
+architecture_cluster <- table(
+  
+  architecture_table$Architecture,
+  architecture_table$Cluster_number_e5
+  
+)
+
+
+
+############################
+# Dominant Foldseek cluster
+############################
+
+dominant_summary <- data.frame(
+
+Architecture =
+  rownames(
+    architecture_cluster
+  ),
+
+
+Dominant_Foldseek_cluster =
+  apply(
+    architecture_cluster,
+    1,
+    function(x)
+      names(which.max(x))
+  ),
+
+
+Dominant_cluster_fraction =
+  apply(
+    architecture_cluster,
+    1,
+    function(x)
+      max(x)/sum(x)
+  ),
+
+
+Total_proteins =
+  rowSums(
+    architecture_cluster
+  )
+
+)
+
+
+dominant_summary <- dominant_summary[
+  
+  order(
+    -dominant_summary$Total_proteins
+  ),
+  
+]
+
+
+
+############################
+# Heatmap data
+############################
+
+script2_heatmap_data <- as.data.frame(
+  architecture_cluster
+)
+
+
+colnames(
+  script2_heatmap_data
+) <- c(
+  "Architecture",
+  "Foldseek_cluster",
+  "Count"
+)
+
+
+
+script2_heatmap_data <- script2_heatmap_data %>%
+  
+  dplyr::group_by(
+    Architecture
+  ) %>%
+  
+  dplyr::mutate(
+    
+    Proportion =
+      Count/sum(Count)
+    
+  ) %>%
+  
+  dplyr::ungroup()
+
+
+
+############################
+# Order architectures
+############################
+
+script2_heatmap_data$Architecture <- factor(
+  
+  script2_heatmap_data$Architecture,
+  
+  levels =
+    dominant_summary$Architecture
+  
+)
+
+
+
+############################
+# Architecture x Foldseek heatmap
+############################
+
+script2_heatmap <- ggplot(
+  
+  script2_heatmap_data,
+  
+  aes(
+    x=Foldseek_cluster,
+    y=Architecture
+  )
+  
+) +
+
+geom_point(
+  
+  data=
+    subset(
+      script2_heatmap_data,
+      Count>0
+    ),
+  
+  aes(
+    size=Proportion,
+    colour=Proportion
+  )
+  
+) +
+
+scale_size_continuous(
+  range=c(1,12)
+) +
+
+theme_bw() +
+
+theme(
+  
+  axis.text.y =
+    element_text(
+      size=8
+    )
+  
+) +
+
+labs(
+  
+  x="Foldseek cluster",
+  
+  y="Protein architecture",
+  
+  size="Proportion",
+  
+  colour="Proportion"
+  
+)
+
+
+
+############################
+# Print numerical outputs
+############################
+
+print(script2_results)
+
+print(Architecture_frequency)
+
+print(dominant_summary)
+
+print(architecture_cluster)
+
+
+
+############################################################
+# END SCRIPT 2
+############################################################
