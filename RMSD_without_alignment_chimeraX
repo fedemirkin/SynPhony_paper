@@ -1,0 +1,242 @@
+# ChimeraX Python script
+# ---------------------------------------------------------------
+# Superimposes models #1-91 onto #92/A, using ONLY each chain's
+# first 69 and last 20 *modeled* residues (by sequence order, not
+# by residue number). This automatically adapts to wherever the
+# inserted domain sits in each protein, since the flanks are taken
+# from the actual ends of the chain rather than a fixed number range.
+#
+# Uses the ChimeraX "align" command (not matchmaker). matchmaker
+# performs a sequence alignment (Needleman-Wunsch) before fitting,
+# and that alignment step pays a gap-penalty cost to bridge from the
+# N-terminal flank to the C-terminal flank -- for a large insertion,
+# that cost outweighs the benefit of matching the C-terminal flank,
+# so matchmaker can silently drop it from the fit. Since we already
+# know the exact residue-to-residue correspondence (query's 1st flank
+# residue = target's 1st flank residue, etc.), "align" is the right
+# tool: it pairs atoms strictly by the ORDER they're listed, with no
+# sequence-alignment step and therefore no gap penalty to fight.
+#
+# Writes a tab-delimited table (one row per query model) with:
+#   query  target  pair_residues_pruned_rmsd  pair_residues_pruned_n
+#   pair_residues_all_rmsd  pair_residues_all_n
+#
+# HOW TO RUN:
+#   1. Open all 92 structures in ChimeraX first, so they load as
+#      models #1 ... #92 (in that order).
+#   2. Run this file with:  open "align_flanks_to_92.py"
+#      (or paste its contents into Tools > General > Shell)
+#
+# WHERE THE OUTPUT GOES:
+#   OUTPUT_TSV below is a plain filename, which ChimeraX will save
+#   in its CURRENT WORKING DIRECTORY. To check/set that directory,
+#   run "cd" (no arguments) in the ChimeraX command line to print
+#   it, or "cd /some/path" to change it BEFORE running this script.
+#   You can also just set OUTPUT_TSV to a full absolute path below,
+#   e.g. r"C:\Users\me\Desktop\matchmaker_results.tsv" or
+#   "/Users/me/Desktop/matchmaker_results.tsv".
+# ---------------------------------------------------------------
+
+import re
+from chimerax.core.commands import run
+from chimerax.core.logger import PlainTextLog
+
+N_TERM_COUNT = 69
+C_TERM_COUNT = 20
+TARGET_MODEL_NUM = 92
+TARGET_CHAIN_ID = "A"
+QUERY_CHAIN_ID = None   # set to e.g. "A" if #1-91 aren't single-chain models
+QUERY_RANGE = range(1, 92)  # models #1 to #91
+
+# Motifs used to anchor the flanks, since some chains (e.g. #92) carry
+# extra residues before/after the conserved domain (cloning tags, etc.)
+# that would otherwise throw off a plain "first N / last C" position
+# count. N_TERM_COUNT residues are taken STARTING AT the first
+# occurrence of START_MOTIF; C_TERM_COUNT residues are taken ENDING AT
+# the last occurrence of END_MOTIF.
+START_MOTIF = "EEFVGDM"
+END_MOTIF = "WQY"
+
+OUTPUT_TSV = "matchmaker_results.tsv"
+
+RMSD_RE = re.compile(
+    r"RMSD between (\d+) pruned atom pairs is ([\d.]+) angstroms;\s*"
+    r"\(across all (\d+) pairs:\s*([\d.]+)\)"
+)
+# Fallback for when nothing gets pruned (message omits the "pruned"/"across all" clause)
+RMSD_RE_SIMPLE = re.compile(
+    r"RMSD between (\d+) atom pairs is ([\d.]+) angstroms"
+)
+
+
+class _Capture(PlainTextLog):
+    """Temporarily grabs plain-text log messages so we can parse the
+    RMSD line out of a single matchmaker call's output."""
+
+    def __init__(self):
+        self.messages = []
+
+    def log(self, level, msg):
+        self.messages.append(msg)
+        return False  # False = also let the normal logger show it
+
+
+AA3TO1 = {
+    'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
+    'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+    'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
+    'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
+    'MSE': 'M',  # selenomethionine, common in crystal structures
+}
+
+
+def res_token(r):
+    return f"{r.number}{r.insertion_code}" if r.insertion_code else str(r.number)
+
+
+def one_letter_seq(residues):
+    return ''.join(AA3TO1.get(r.name, 'X') for r in residues)
+
+
+def flank_spec(model, chain_id, n_term, c_term, start_motif, end_motif):
+    """Build an atomspec selecting n_term residues starting at the
+    first occurrence of start_motif, and c_term residues ending at
+    the last occurrence of end_motif -- anchored on sequence content,
+    not raw chain position, so leading/trailing tags don't shift
+    which residues get selected."""
+    if chain_id is None:
+        chain = model.chains[0]
+    else:
+        matches = [c for c in model.chains if c.chain_id == chain_id]
+        if not matches:
+            raise ValueError(f"Model #{model.id_string} has no chain '{chain_id}'")
+        chain = matches[0]
+
+    residues = chain.existing_residues  # sorted in sequence order
+    seq = one_letter_seq(residues)
+
+    start_idx = seq.find(start_motif)
+    if start_idx == -1:
+        raise ValueError(
+            f"Model #{model.id_string} chain {chain.chain_id}: start motif "
+            f"'{start_motif}' not found."
+        )
+    end_idx = seq.rfind(end_motif)
+    if end_idx == -1:
+        raise ValueError(
+            f"Model #{model.id_string} chain {chain.chain_id}: end motif "
+            f"'{end_motif}' not found."
+        )
+    end_last = end_idx + len(end_motif) - 1  # index of last residue of end motif
+
+    n_res = residues[start_idx: start_idx + n_term]
+    if len(n_res) < n_term:
+        raise ValueError(
+            f"Model #{model.id_string} chain {chain.chain_id}: only "
+            f"{len(n_res)} residues available after start motif, need {n_term}."
+        )
+
+    c_start = end_last - c_term + 1
+    if c_start < 0:
+        raise ValueError(
+            f"Model #{model.id_string} chain {chain.chain_id}: only "
+            f"{end_last + 1} residues available before/at end motif, need {c_term}."
+        )
+    c_res = residues[c_start: end_last + 1]
+
+    tokens = [res_token(r) for r in n_res] + [res_token(r) for r in c_res]
+
+    spec = f"#{model.id_string}"
+    if chain_id is not None:
+        spec += f"/{chain_id}"
+    spec += ":" + ",".join(tokens)
+    return spec, chain
+
+
+def get_model_by_number(session, num):
+    for m in session.models.list():
+        if m.id == (num,):
+            return m
+    raise ValueError(f"No top-level model #{num} found. Is it open?")
+
+
+def run_align_and_capture(session, cmd):
+    """Run an align command and return (pruned_n, pruned_rmsd, all_n, all_rmsd)
+    parsed from the log line it prints, or None if not found."""
+    cap = _Capture()
+    session.logger.add_log(cap)
+    try:
+        run(session, cmd)
+    finally:
+        session.logger.remove_log(cap)
+
+    for msg in cap.messages:
+        m = RMSD_RE.search(msg)
+        if m:
+            pruned_n, pruned_rmsd, all_n, all_rmsd = m.groups()
+            return int(pruned_n), float(pruned_rmsd), int(all_n), float(all_rmsd)
+        m2 = RMSD_RE_SIMPLE.search(msg)
+        if m2:
+            n, rmsd = m2.groups()
+            # No pruning happened -- pruned set equals the full set
+            return int(n), float(rmsd), int(n), float(rmsd)
+    return None
+
+
+def main(session):
+    target_model = get_model_by_number(session, TARGET_MODEL_NUM)
+    # Both sides restricted to their own first-69/last-20 modeled
+    # residues. Correspondence is by ORDER (align pairs the i-th atom
+    # of matchatoms with the i-th atom of refatoms) -- no sequence
+    # alignment step, so there's no gap penalty that could cause the
+    # C-terminal flank to be dropped.
+    target_spec, target_chain = flank_spec(
+        target_model, TARGET_CHAIN_ID, N_TERM_COUNT, C_TERM_COUNT, START_MOTIF, END_MOTIF
+    )
+    session.logger.info(f"Target flank spec (#{TARGET_MODEL_NUM}/{TARGET_CHAIN_ID}): {target_spec}")
+
+    rows = []
+    for i in QUERY_RANGE:
+        try:
+            query_model = get_model_by_number(session, i)
+            query_spec, query_chain = flank_spec(
+                query_model, QUERY_CHAIN_ID, N_TERM_COUNT, C_TERM_COUNT, START_MOTIF, END_MOTIF
+            )
+        except ValueError as e:
+            session.logger.warning(f"Skipping model #{i}: {e}")
+            continue
+
+        cmd = f"align {query_spec}@CA to {target_spec}@CA cutoffDistance 2.0"
+        result = run_align_and_capture(session, cmd)
+
+        if result is None:
+            session.logger.warning(f"Model #{i}: could not parse RMSD from log output.")
+            continue
+
+        pruned_n, pruned_rmsd, all_n, all_rmsd = result
+        rows.append({
+            "query": f"{i}/{query_chain.chain_id}",
+            "target": f"{TARGET_MODEL_NUM}/{target_chain.chain_id}",
+            "pair_residues_pruned_rmsd": pruned_rmsd,
+            "pair_residues_pruned_n": pruned_n,
+            "pair_residues_all_rmsd": all_rmsd,
+            "pair_residues_all_n": all_n,
+        })
+
+    columns = [
+        "query", "target",
+        "pair_residues_pruned_rmsd", "pair_residues_pruned_n",
+        "pair_residues_all_rmsd", "pair_residues_all_n",
+    ]
+    with open(OUTPUT_TSV, "w") as f:
+        f.write("\t".join(columns) + "\n")
+        for row in rows:
+            f.write("\t".join(str(row[c]) for c in columns) + "\n")
+
+    import os
+    session.logger.info(
+        f"Done. Wrote {len(rows)} rows to: {os.path.abspath(OUTPUT_TSV)}"
+    )
+
+
+main(session)
