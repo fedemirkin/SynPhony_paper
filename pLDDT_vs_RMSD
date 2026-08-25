@@ -1,0 +1,91 @@
+# ============================================================
+# RMSD vs Average_CA_Value (pLDDT), one panel per ID.
+# Linkers 3, 4, 6, 7 are colour-filled (colourblind-safe); all
+# other Linkers are plain white points with a black outline.
+# SAP05 is a single reference structure, so instead of getting its
+# own panel, it's plotted as a solid black dot in every panel.
+# ============================================================
+
+# --- Packages -------------------------------------------------
+# install.packages(c("ggplot2", "dplyr"))  # run once if needed
+library(ggplot2)
+library(dplyr)
+
+# --- Load data --------------------------------------------------
+# Replace with the path to your data file (CSV assumed here).
+# Required columns: ID, Linkers, Average_CA_Value, RMSD
+df <- read.csv("your_data.csv")
+
+# --- Prep data ----------------------------------------------------
+df$ID      <- trimws(as.character(df$ID))       # guard against stray whitespace
+df$Linkers <- as.factor(df$Linkers)
+
+# Fixed panel order for the facets. SAP05 is deliberately excluded
+# here since it doesn't get its own panel (see below).
+id_order <- c("WP_246454204", "GFP", "SAP54_K61E")
+extra_ids <- setdiff(unique(df$ID), c(id_order, "SAP05"))
+id_order <- c(id_order, extra_ids)
+
+df_main <- df %>%
+  filter(toupper(ID) != "SAP05") %>%
+  mutate(ID = factor(ID, levels = id_order))
+
+# The SAP05 point, kept WITHOUT an ID column, so ggplot has no
+# faceting value to match it to a single panel and instead repeats
+# ("recycles") this single point identically into every facet.
+sap05_point <- df %>%
+  filter(toupper(ID) == "SAP05") %>%
+  select(RMSD, Average_CA_Value)
+
+# Diagnostic: warn loudly if SAP05 wasn't found, instead of silently
+# plotting nothing. Check unique(df$ID) below if this fires.
+if (nrow(sap05_point) == 0) {
+  warning("No rows matched ID == 'SAP05'. Unique ID values found: ",
+          paste(unique(df$ID), collapse = ", "))
+}
+
+# Highlighted Linkers values get colour; everything else is plain
+# white with a black outline.
+highlight_levels <- c("3", "4", "6", "7")
+
+# Okabe-Ito colourblind-safe palette
+highlight_colors <- c(
+  "3" = "#009E73",  # bluish green
+  "4" = "#0072B2",  # blue
+  "6" = "#D55E00",  # vermillion
+  "7" = "#CC79A7"   # reddish purple
+)
+
+df_other     <- df_main %>% filter(!(Linkers %in% highlight_levels))
+df_highlight <- df_main %>% filter(Linkers %in% highlight_levels) %>%
+  mutate(Linkers = factor(Linkers, levels = highlight_levels))
+
+# --- Build plot -----------------------------------------------------
+p <- ggplot() +
+  geom_point(data = df_other,
+             aes(x = RMSD, y = Average_CA_Value),
+             shape = 21, fill = "white", color = "black",
+             stroke = 0.6, size = 2) +
+  geom_point(data = df_highlight,
+             aes(x = RMSD, y = Average_CA_Value, fill = Linkers),
+             shape = 21, color = "black", stroke = 0.6, size = 2) +
+  geom_point(data = sap05_point,
+             aes(x = RMSD, y = Average_CA_Value),
+             shape = 21, fill = "black", color = "black",
+             stroke = 0.6, size = 2.5) +
+  facet_wrap(~ ID, ncol = 3) +
+  scale_fill_manual(values = highlight_colors, name = "Linkers") +
+  coord_cartesian(xlim = c(0, NA), ylim = c(80, 100)) +
+  theme_minimal(base_size = 14) +
+  theme(panel.spacing = unit(1.2, "lines")) +
+  labs(
+    x = "RMSD",
+    y = "Average CA Value (pLDDT)",
+    title = "RMSD vs pLDDT by ID",
+    subtitle = "Linkers 3, 4, 6, 7 are colour-filled; SAP05 shown as a solid black point in every panel"
+  )
+
+print(p)
+
+# --- Save plot ------------------------------------------------------
+ggsave("rmsd_vs_plddt.png", plot = p, width = 14, height = 5, dpi = 300)
