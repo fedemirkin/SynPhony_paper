@@ -1,0 +1,100 @@
+# ============================================================
+# Violin plots of Average_CA_Value and pTM by ID, side by side.
+# Jittered points; Linkers 3, 4, 6, 7 are colour-filled, connected
+# across ID groups, and drawn on top of the plain white points.
+# ============================================================
+
+# --- Packages -------------------------------------------------
+# install.packages(c("ggplot2", "dplyr", "patchwork"))  # run once if needed
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# --- Load data --------------------------------------------------
+# Replace with the path to your data file (CSV assumed here).
+# Required columns: ID, Linkers, Average_CA_Value, pTM
+df <- read.csv("your_data.csv")
+
+# --- Prep data ----------------------------------------------------
+# Fixed order for the violins on the x-axis. Any ID not listed here
+# (in case your data has more than these three) is appended after,
+# in the order it first appears in the data.
+id_order   <- c("WP_246454204", "GFP", "SAP54_K61E")
+extra_ids  <- setdiff(unique(as.character(df$ID)), id_order)
+id_order   <- c(id_order, extra_ids)
+
+df$ID      <- factor(df$ID, levels = id_order)
+df$Linkers <- as.factor(df$Linkers)
+
+# Highlighted Linkers values get colour + connecting lines;
+# everything else stays plain white with no lines.
+highlight_levels <- c("3", "4", "6", "7")
+
+# Okabe-Ito colourblind-safe palette
+highlight_colors <- c(
+  "3" = "#009E73",  # bluish green
+  "4" = "#0072B2",  # blue
+  "6" = "#D55E00",  # vermillion
+  "7" = "#CC79A7"   # reddish purple
+)
+
+# Jittered x-position computed once per row, so points and their
+# connecting lines share the exact same location across BOTH plots.
+set.seed(42)
+df <- df %>%
+  group_by(ID) %>%
+  mutate(x_jitter = as.numeric(ID) + runif(n(), -0.15, 0.15)) %>%
+  ungroup()
+
+df_other     <- df %>% filter(!(Linkers %in% highlight_levels))
+df_highlight <- df %>% filter(Linkers %in% highlight_levels) %>%
+  mutate(Linkers = factor(Linkers, levels = highlight_levels))
+
+# --- Reusable plot builder -------------------------------------------
+# y_col:    name of the column to plot on the y-axis (string)
+# y_limits: c(min, max) for that axis
+# y_label:  axis title text
+# title:    panel title
+make_violin_plot <- function(y_col, y_limits, y_label, title) {
+  ggplot() +
+    geom_violin(data = df, aes(x = ID, y = .data[[y_col]]),
+                trim = FALSE, fill = "lightblue", color = "black", alpha = 0.5) +
+    geom_point(data = df_other,
+               aes(x = x_jitter, y = .data[[y_col]]),
+               shape = 21, fill = "white", color = "black",
+               stroke = 0.6, size = 2) +
+    geom_line(data = df_highlight,
+              aes(x = x_jitter, y = .data[[y_col]],
+                  group = Linkers, color = Linkers),
+              alpha = 0.8, linewidth = 0.6) +
+    geom_point(data = df_highlight,
+               aes(x = x_jitter, y = .data[[y_col]], fill = Linkers),
+               shape = 21, color = "black", stroke = 0.6, size = 2) +
+    scale_fill_manual(values = highlight_colors, name = "Linkers") +
+    scale_color_manual(values = highlight_colors, name = "Linkers") +
+    coord_cartesian(ylim = y_limits) +
+    scale_x_discrete(limits = levels(df$ID)) +
+    theme_minimal(base_size = 14) +
+    labs(x = "ID", y = y_label, title = title)
+}
+
+# --- Build both plots --------------------------------------------------
+# NOTE: assumes the pTM column is named "pTM" with the natural 0-1 range.
+# Change the column name / limits below if yours differs.
+p_plddt <- make_violin_plot("Average_CA_Value", c(80, 100),
+                             "Average CA Value (pLDDT)", "Average CA Value")
+p_ptm   <- make_violin_plot("pTM", c(0.5, 0.8),
+                             "pTM", "pTM")
+
+# --- Combine side by side, sharing one legend ---------------------------
+combined <- (p_plddt + p_ptm) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    subtitle = "Linkers 3, 4, 6, 7 are colour-filled, connected, and drawn on top; all others are plain white"
+  ) &
+  theme(legend.position = "right")
+
+print(combined)
+
+# --- Save plot ------------------------------------------------------
+ggsave("violin_plot.png", plot = combined, width = 15, height = 6, dpi = 300)
