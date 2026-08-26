@@ -1,0 +1,154 @@
+# ============================================================
+# Normalization vs Co-infiltration: violin plot + mixed-model stats
+# Assumes a data frame called `df` is already loaded in your
+# R session, with (at least) these columns:
+#   Leaf, Co-infiltration, Normalization
+# (column names with spaces/hyphens are fine, they get cleaned below)
+#
+# DESIGN: Each Leaf provides one measurement per Co-infiltration
+# condition (a repeated-measures / randomized-block design). Leaf is
+# therefore treated as a RANDOM EFFECT (random intercept) in a linear
+# mixed model, which removes leaf-to-leaf variability from the
+# comparison without spending residual degrees of freedom the way a
+# fixed-effect blocked ANOVA would (which collapses power at small n).
+#
+# "SAP54_K61E" is the normalization reference and is exactly 1 in every
+# leaf by construction (it's the denominator used to calculate
+# `Normalization` for every other group). Because it has zero variance,
+# it is excluded from the mixed model among the real experimental
+# groups. Instead, each real group is compared to it via a paired test
+# matched by Leaf (H1: mean < SAP54_K61E). Both sets of p-values are
+# then combined into a single compact-letter display covering all 6
+# groups.
+# ============================================================
+
+library(ggplot2)
+library(dplyr)
+library(lme4)
+library(lmerTest)   # adds Satterthwaite/Kenward-Roger p-values to lmer
+library(emmeans)    # estimated marginal means + Tukey-adjusted contrasts
+library(multcomp)   # cld() compact letter display from emmeans
+library(multcompView)
+
+# ---- 0. Clean column names (handles "Co-infiltration" etc.) ----
+names(df) <- gsub("[^A-Za-z0-9]", "_", names(df))
+names(df) <- gsub("_+", "_", names(df))
+names(df) <- gsub("_$", "", names(df))
+
+df$Co_infiltration <- factor(df$Co_infiltration,
+                              levels = c("SAP54", "SAP54_K61E", "Syn05_1", "Syn05_2", "Syn05_3", "Syn05_4"))
+df$Leaf <- factor(df$Leaf)
+
+# ---- 0b. Exclude the normalization reference group from the mixed model ----
+df_test <- df %>%
+  filter(Co_infiltration != "SAP54_K61E") %>%
+  droplevels()
+
+# ---- 1. Descriptive stats per group ----
+desc <- df_test %>%
+  group_by(Co_infiltration) %>%
+  summarise(n = n(), mean = mean(Normalization), sd = sd(Normalization),
+            median = median(Normalization), .groups = "drop")
+print(desc)
+
+# ---- 2. Normality tests ----
+cat("\n--- Shapiro-Wilk test per group ---\n")
+shapiro_results <- df_test %>%
+  group_by(Co_infiltration) %>%
+  summarise(p_value = tryCatch(shapiro.test(Normalization)$p.value,
+                                error = function(e) NA_real_),
+            .groups = "drop")
+print(shapiro_results)
+
+# ---- 3. Linear mixed-effects model: Co_infiltration (fixed) + Leaf (random) ----
+mm <- lmer(Normalization ~ Co_infiltration + (1 | Leaf), data = df_test)
+print(summary(mm))
+
+cat("\n--- Shapiro-Wilk test on mixed-model residuals ---\n")
+print(shapiro.test(residuals(mm)))
+cat("Note: with only 4 leaves (random-effect levels), this test has low\n",
+    "power in either direction and should be interpreted cautiously.\n")
+
+cat("\n--- Type III ANOVA (Satterthwaite df) ---\n")
+print(anova(mm))
+
+cat("\n--- Estimated marginal means + Tukey-adjusted pairwise comparisons ---\n")
+em <- emmeans(mm, ~ Co_infiltration)
+print(em)
+print(pairs(em, adjust = "tukey"))
+
+pw <- as.data.frame(pairs(em, adjust = "tukey"))
+# emmeans contrast names look like "SAP54 - Syn05_1" -> convert to "Syn05_1-SAP54"
+comps <- sapply(strsplit(pw$contrast, " - "), function(x) paste(x[2], x[1], sep = "-"))
+p_vec <- setNames(pw$p.value, comps)
+
+# ---- 3b. Paired tests vs SAP54_K61E reference (matched by Leaf) ----
+cat("\n--- Paired tests vs SAP54_K61E (matched by Leaf), H1: mean difference < 0 ---\n")
+ref_data <- df %>% filter(Co_infiltration == "SAP54_K61E") %>% arrange(Leaf)
+
+ref_tests <- df_test %>%
+  group_by(Co_infiltration) %>%
+  group_modify(~ {
+    grp <- as.character(.y$Co_infiltration)
+    x <- .x %>% arrange(Leaf) %>% pull(Normalization)
+    y <- ref_data$Normalization
+    is_normal_p <- shapiro_results$p_value[shapiro_results$Co_infiltration == grp]
+    if (!is.na(is_normal_p) && is_normal_p > 0.05) {
+      test <- t.test(x, y, paired = TRUE, alternative = "less"); method <- "paired t-test"
+    } else {
+      test <- wilcox.test(x, y, paired = TRUE, alternative = "less"); method <- "paired Wilcoxon signed-rank"
+    }
+    tibble(method = method, p_value = test$p.value)
+  })
+print(ref_tests)
+
+p_vec_ref <- setNames(ref_tests$p_value, paste(ref_tests$Co_infiltration, "SAP54_K61E", sep = "-"))
+
+# ---- 4. Compact letter display (combine mixed-model + vs-reference p-values) ----
+p_vec_all <- c(p_vec, p_vec_ref)
+letters_out <- multcompLetters(p_vec_all)$Letters
+letters_df <- data.frame(Co_infiltration = names(letters_out), letter = letters_out, row.names = NULL)
+print(letters_df)
+
+label_pos <- df %>%
+  group_by(Co_infiltration) %>%
+  summarise(y_pos = max(Normalization) + 0.05, .groups = "drop") %>%
+  left_join(letters_df, by = "Co_infiltration")
+
+# ---- 5. Violin plot ----
+# SAP54_K61E's data points are shown (for reference), but it gets no violin
+# shape since it has zero variance (constant at 1 in every leaf) -- a
+# density estimate would be meaningless for it.
+#
+# The violin already uses `fill` to color by Co_infiltration, so the dots
+# can't also map a *different* variable (Leaf) onto `fill` in the usual way
+# -- ggplot only supports one scale per aesthetic without extra packages.
+# Instead we assign each point a jittered numeric x-position once, then draw
+# Leaf 3's points and all other points as two separate layers with fixed
+# (non-mapped) fill colors, so both use the exact same x positions.
+group_levels <- levels(df$Co_infiltration)
+x_lookup <- setNames(seq_along(group_levels), group_levels)
+set.seed(1)  # reproducible jitter
+df$x_jit <- x_lookup[as.character(df$Co_infiltration)] + runif(nrow(df), -0.08, 0.08)
+
+leaf3 <- df %>% filter(as.character(Leaf) == "3")
+other_leaves <- df %>% filter(as.character(Leaf) != "3")
+
+p <- ggplot() +
+  geom_violin(data = df_test, aes(x = Co_infiltration, y = Normalization, fill = Co_infiltration),
+              trim = FALSE, alpha = 0.6) +
+  geom_point(data = other_leaves, aes(x = x_jit, y = Normalization),
+             shape = 21, fill = "white", color = "black", size = 2.5, stroke = 0.6) +
+  geom_point(data = leaf3, aes(x = x_jit, y = Normalization),
+             shape = 21, fill = "black", color = "black", size = 2.5, stroke = 0.6) +
+  geom_text(data = label_pos, aes(x = Co_infiltration, y = y_pos, label = letter),
+            fontface = "bold", size = 5) +
+  labs(x = "Co-infiltration", y = "Normalization",
+       title = "Normalization by Co-infiltration") +
+  coord_cartesian(ylim = c(0, 1.1)) +
+  scale_x_discrete(limits = group_levels) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p)
+ggsave("normalization_violin.png", p, width = 7, height = 5, dpi = 300)
