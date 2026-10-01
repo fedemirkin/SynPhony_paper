@@ -1,0 +1,517 @@
+############################################################
+# Loop 7 swap tolerance: combined figure (Panels A, C, B)
+#
+# Panel A: overall split violin, chimera vs WT pLDDT, pooled
+#          across all donor clades, coloured by clade
+# Panel C: the same comparison broken out per individual donor
+#          clade (not pooled), ordered Clade_1 -> Clade_10
+# Panel B: Delta (pLDDT - pLDDT_replacement), R-type (Clades
+#          1-7) vs Y-type (Clade_10) donor loops
+#
+# Throughout: circle = chimera (SAP05 + donor Loop 7),
+#             triangle = WT (donor's own native domain).
+# WP_011412316.1 (canonical SAP05) is drawn in black, on top
+# of every other point, in all three panels.
+#
+# No extra packages beyond ggplot2 + dplyr + patchwork are
+# required (split violins are built manually from density()
+# output, since gghalves/see are not available through apt in
+# this environment).
+############################################################
+
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# ------------------------------------------------------------
+# 0. Load data
+# ------------------------------------------------------------
+# Expected columns: Full_name, Assigned_clade, pLDDT,
+#                    pLDDT_replacement, Delta
+
+# df <- read.csv("loop7_swap_data.csv", stringsAsFactors = FALSE)
+
+# ------------------------------------------------------------
+# 1. Clade colours (match Fig 1A / S6 Fig)
+# ------------------------------------------------------------
+clade_colours <- c(
+  "Clade_1"  = "#ff8080",
+  "Clade_2"  = "#ff9955",
+  "Clade_3"  = "#ffcc00",
+  "Clade_4"  = "#ff2a7f",
+  "Clade_5"  = "#e9afdd",
+  "Clade_6"  = "#8080ff",
+  "Clade_7"  = "#00aad4",
+  "Clade_8"  = "#2ca089",
+  "Clade_9"  = "#7f2a7f",
+  "Clade_10" = "#aad400"
+)
+
+# Protein to highlight in black, drawn on top of all other points
+# (WP_011412316.1 corresponds to canonical SAP05 itself)
+highlight_id <- "WP_011412316.1"
+
+# R-type clades = all clades with the conserved D100/R104 Loop 7
+# signature (Clades 1-7); Y-type = Clade_10 only. Clades 8 and 9
+# are excluded from the R-vs-Y comparisons (see main text).
+r_type_clades <- paste0("Clade_", 1:7)
+y_type_clades <- "Clade_10"
+
+# ------------------------------------------------------------
+# 2. Density helper: build a mirrored half-violin polygon
+# ------------------------------------------------------------
+# side = -1 -> violin bulges to the LEFT of x0
+# side = +1 -> violin bulges to the RIGHT of x0
+half_violin_polygon <- function(values, x0, side, scale_to = 0.4) {
+
+  values <- values[is.finite(values)]
+  if (length(values) < 2) return(NULL)
+
+  # clamp the density estimate to the real data range so the violin
+  # cannot be drawn extending past actual min/max values (density()
+  # otherwise extrapolates ~3 bandwidths beyond the data by default,
+  # which for a bounded score like pLDDT can visually exceed 100)
+  d <- density(values, n = 256, from = min(values), to = max(values))
+  w <- d$y / max(d$y) * scale_to
+
+  data.frame(
+    x = c(x0, x0 + side * w, x0),
+    y = c(min(d$x), d$x, max(d$x))
+  )
+}
+
+############################################################
+# STATISTICS (shared across panels; printed to console)
+############################################################
+
+# ---- R-type vs Y-type, raw chimera pLDDT (used by Panel A) ----
+df_stat <- df %>%
+  filter(Assigned_clade %in% c(r_type_clades, y_type_clades)) %>%
+  mutate(loop_type = ifelse(Assigned_clade %in% y_type_clades, "Y-type", "R-type"))
+
+r_vals <- df_stat$pLDDT_replacement[df_stat$loop_type == "R-type"]
+y_vals <- df_stat$pLDDT_replacement[df_stat$loop_type == "Y-type"]
+
+cat("\n--- Shapiro-Wilk normality test (chimera pLDDT) ---\n")
+shapiro_r <- tryCatch(shapiro.test(r_vals), error = function(e) NULL)
+shapiro_y <- tryCatch(shapiro.test(y_vals), error = function(e) NULL)
+print(shapiro_r)
+print(shapiro_y)
+
+normal_both <- !is.null(shapiro_r) && !is.null(shapiro_y) &&
+  shapiro_r$p.value > 0.05 && shapiro_y$p.value > 0.05
+
+if (normal_both) {
+  test_result <- t.test(r_vals, y_vals)
+  test_method <- "Welch's t-test"
+} else {
+  test_result <- wilcox.test(r_vals, y_vals)
+  test_method <- "Wilcoxon rank-sum test"
+}
+print(test_result)
+
+p_val <- test_result$p.value
+p_label <- if (p_val < 0.0001) "P < 0.0001" else paste0("P = ", signif(p_val, 3))
+
+cat(sprintf(
+  "\nSummary: %s, chimera pLDDT, R-type (n = %d, median = %.1f) vs Y-type (n = %d, median = %.1f), %s\n",
+  test_method, length(r_vals), median(r_vals), length(y_vals), median(y_vals), p_label
+))
+
+# ---- R-type vs Y-type, WT (native) pLDDT (used by Panel A, right half) ----
+r_wt_vals <- df_stat$pLDDT[df_stat$loop_type == "R-type"]
+y_wt_vals <- df_stat$pLDDT[df_stat$loop_type == "Y-type"]
+
+cat("\n--- Shapiro-Wilk normality test (WT pLDDT) ---\n")
+shapiro_r_wt <- tryCatch(shapiro.test(r_wt_vals), error = function(e) NULL)
+shapiro_y_wt <- tryCatch(shapiro.test(y_wt_vals), error = function(e) NULL)
+print(shapiro_r_wt)
+print(shapiro_y_wt)
+
+normal_both_wt <- !is.null(shapiro_r_wt) && !is.null(shapiro_y_wt) &&
+  shapiro_r_wt$p.value > 0.05 && shapiro_y_wt$p.value > 0.05
+
+if (normal_both_wt) {
+  test_result_wt <- t.test(r_wt_vals, y_wt_vals)
+  test_method_wt <- "Welch's t-test"
+} else {
+  test_result_wt <- wilcox.test(r_wt_vals, y_wt_vals)
+  test_method_wt <- "Wilcoxon rank-sum test"
+}
+print(test_result_wt)
+
+p_val_wt <- test_result_wt$p.value
+p_label_wt <- if (p_val_wt < 0.0001) "P < 0.0001" else paste0("P = ", signif(p_val_wt, 3))
+
+cat(sprintf(
+  "\nSummary: %s, WT pLDDT, R-type (n = %d, median = %.1f) vs Y-type (n = %d, median = %.1f), %s\n",
+  test_method_wt, length(r_wt_vals), median(r_wt_vals), length(y_wt_vals), median(y_wt_vals), p_label_wt
+))
+
+# ---- Sanity check: homogeneity among individual R-type clades ----
+r_type_df <- df %>% filter(Assigned_clade %in% r_type_clades) %>% droplevels()
+
+cat("\n=== Kruskal-Wallis test across individual R-type clades (1-7) ===\n")
+cat("Sample sizes per clade:\n")
+print(table(r_type_df$Assigned_clade))
+
+kw_result <- kruskal.test(pLDDT_replacement ~ Assigned_clade, data = r_type_df)
+print(kw_result)
+
+kw_p <- kw_result$p.value
+kw_p_label <- if (kw_p < 0.0001) "P < 0.0001" else paste0("P = ", signif(kw_p, 3))
+
+cat(sprintf(
+  "\nSummary: Kruskal-Wallis across Clades 1-7 (chimera pLDDT), %s -> %s\n",
+  kw_p_label,
+  ifelse(kw_p > 0.05,
+         "no significant difference among R-type clades; pooling is supported.",
+         "significant difference detected among R-type clades; pooling should be interpreted with caution.")
+))
+
+cat("\n--- Per-clade summary (chimera pLDDT), R-type clades ---\n")
+r_type_summary <- r_type_df %>%
+  group_by(Assigned_clade) %>%
+  summarise(
+    n      = n(),
+    median = median(pLDDT_replacement),
+    q1     = quantile(pLDDT_replacement, 0.25),
+    q3     = quantile(pLDDT_replacement, 0.75),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(median))
+print(r_type_summary)
+
+median_range <- range(r_type_summary$median)
+median_spread <- diff(median_range)
+ry_gap <- median(r_vals) - median(y_vals)
+
+cat(sprintf(
+  "\nFor reference: pooled R-type median = %.1f, Y-type median = %.1f (gap = %.1f)\n",
+  median(r_vals), median(y_vals), ry_gap
+))
+cat(sprintf(
+  "Range of individual R-type clade medians: %.1f-%.1f (spread = %.1f), i.e. %.0f%% of the R-type vs Y-type gap (%.1f)\n",
+  median_range[1], median_range[2], median_spread, 100 * median_spread / ry_gap, ry_gap
+))
+
+kw_H <- unname(kw_result$statistic)
+kw_k <- length(unique(r_type_df$Assigned_clade))
+kw_n <- nrow(r_type_df)
+eta2_H <- (kw_H - kw_k + 1) / (kw_n - kw_k)
+eta2_interpretation <- if (eta2_H < 0.01) "negligible" else if (eta2_H < 0.06) "small" else if (eta2_H < 0.14) "medium" else "large"
+cat(sprintf("\nKruskal-Wallis effect size: eta-squared (H-based) = %.3f (%s effect)\n", eta2_H, eta2_interpretation))
+
+cat("\n--- Post-hoc pairwise comparisons among R-type clades (BH-adjusted) ---\n")
+posthoc <- pairwise.wilcox.test(r_type_df$pLDDT_replacement, r_type_df$Assigned_clade, p.adjust.method = "BH")
+print(posthoc)
+
+# ---- Delta, R-type vs Y-type (used by Panel B) ----
+# Defined here as Chimera - WT (positive = chimera predicted MORE
+# confidently than the donor's own native domain; negative = a
+# confidence loss upon grafting into the SAP05 scaffold). Note this
+# is the opposite sign convention from the raw Delta column in the
+# input data (which is WT - chimera), so it is recomputed directly
+# from pLDDT_replacement and pLDDT rather than read from df$Delta.
+r_delta <- df_stat$pLDDT_replacement[df_stat$loop_type == "R-type"] - df_stat$pLDDT[df_stat$loop_type == "R-type"]
+y_delta <- df_stat$pLDDT_replacement[df_stat$loop_type == "Y-type"] - df_stat$pLDDT[df_stat$loop_type == "Y-type"]
+
+cat("\n--- Delta: Shapiro-Wilk normality test ---\n")
+shapiro_r_d <- tryCatch(shapiro.test(r_delta), error = function(e) NULL)
+shapiro_y_d <- tryCatch(shapiro.test(y_delta), error = function(e) NULL)
+print(shapiro_r_d)
+print(shapiro_y_d)
+
+normal_both_d <- !is.null(shapiro_r_d) && !is.null(shapiro_y_d) &&
+  shapiro_r_d$p.value > 0.05 && shapiro_y_d$p.value > 0.05
+
+if (normal_both_d) {
+  test_result_d <- t.test(r_delta, y_delta)
+  test_method_d <- "Welch's t-test"
+} else {
+  test_result_d <- wilcox.test(r_delta, y_delta)
+  test_method_d <- "Wilcoxon rank-sum test"
+}
+print(test_result_d)
+
+p_val_d <- test_result_d$p.value
+p_label_d <- if (p_val_d < 0.0001) "P < 0.0001" else paste0("P = ", signif(p_val_d, 3))
+
+cat(sprintf(
+  "\nSummary: %s, Delta, R-type (n = %d, median = %.1f) vs Y-type (n = %d, median = %.1f), %s\n",
+  test_method_d, length(r_delta), median(r_delta), length(y_delta), median(y_delta), p_label_d
+))
+
+one_sample_test <- function(values, group_label) {
+  shapiro_p <- tryCatch(shapiro.test(values)$p.value, error = function(e) NA)
+  if (!is.na(shapiro_p) && shapiro_p > 0.05) {
+    res <- t.test(values, mu = 0); method <- "one-sample t-test"
+  } else {
+    res <- wilcox.test(values, mu = 0); method <- "one-sample Wilcoxon signed-rank test"
+  }
+  p <- res$p.value
+  p_lab <- if (p < 0.0001) "P < 0.0001" else paste0("P = ", signif(p, 3))
+  cat(sprintf("\n--- %s vs 0: %s, n = %d, median = %.2f, %s ---\n", group_label, method, length(values), median(values), p_lab))
+  print(res)
+  list(p = p, p_lab = p_lab, method = method)
+}
+
+cat("\n=== One-sample tests: Delta vs 0, within each group ===\n")
+r_vs_zero <- one_sample_test(r_delta, "R-type Delta")
+y_vs_zero <- one_sample_test(y_delta, "Y-type Delta")
+
+sig_stars <- function(p) {
+  if (p < 0.0001) "****" else if (p < 0.001) "***" else if (p < 0.01) "**" else if (p < 0.05) "*" else "ns"
+}
+r_stars <- sig_stars(r_vs_zero$p)
+y_stars <- sig_stars(y_vs_zero$p)
+
+############################################################
+# PANEL A: overall split violin, chimera vs WT, pooled
+############################################################
+x0 <- 1
+
+violin_chimera <- half_violin_polygon(df_stat$pLDDT_replacement, x0 = x0, side = -1)
+violin_wt      <- half_violin_polygon(df_stat$pLDDT,             x0 = x0, side = +1)
+
+set.seed(1)
+points_chimera_all <- df_stat %>%
+  mutate(x_jit = x0 - 0.08 - runif(n(), 0, 0.18), y = pLDDT_replacement)
+points_wt_all <- df_stat %>%
+  mutate(x_jit = x0 + 0.08 + runif(n(), 0, 0.18), y = pLDDT)
+
+points_chimera    <- points_chimera_all %>% filter(Full_name != highlight_id)
+points_chimera_hl <- points_chimera_all %>% filter(Full_name == highlight_id)
+points_wt         <- points_wt_all %>% filter(Full_name != highlight_id)
+points_wt_hl      <- points_wt_all %>% filter(Full_name == highlight_id)
+
+# R-type and Y-type colour accents for the median ticks/labels
+# (kept distinct from individual clade colours, since these ticks
+# represent the pooled R-type vs Y-type grouping, not one clade)
+rtype_colour <- "#444444"
+ytype_colour <- "#aad400"  # matches Clade_10 (the only Y-type clade)
+
+panel_a_medians <- data.frame(
+  x     = c(x0 - 0.2, x0 - 0.2, x0 + 0.2, x0 + 0.2),
+  side  = c("chimera", "chimera", "wt", "wt"),
+  group = c("R-type", "Y-type", "R-type", "Y-type"),
+  med   = c(median(r_vals), median(y_vals), median(r_wt_vals), median(y_wt_vals))
+) %>%
+  mutate(
+    label  = sprintf("%s: %.1f", ifelse(group == "R-type", "R", "Y"), med),
+    colour = ifelse(group == "R-type", rtype_colour, ytype_colour)
+  )
+
+panel_a <- ggplot() +
+  geom_polygon(data = violin_chimera, aes(x = x, y = y), fill = "grey85", colour = "grey40", linewidth = 0.3) +
+  geom_polygon(data = violin_wt, aes(x = x, y = y), fill = "grey85", colour = "grey40", linewidth = 0.3) +
+  geom_point(data = points_chimera, aes(x = x_jit, y = y, colour = Assigned_clade),
+             shape = 16, size = 2, alpha = 0.85) +
+  geom_point(data = points_wt, aes(x = x_jit, y = y, colour = Assigned_clade),
+             shape = 17, size = 2, alpha = 0.85) +
+  geom_point(data = points_chimera_hl, aes(x = x_jit, y = y), colour = "black", shape = 16, size = 3) +
+  geom_point(data = points_wt_hl, aes(x = x_jit, y = y), colour = "black", shape = 17, size = 3) +
+  geom_segment(data = filter(panel_a_medians, group == "R-type"),
+               aes(x = x - 0.17, xend = x + 0.17, y = med, yend = med),
+               colour = rtype_colour, linewidth = 1.3) +
+  geom_segment(data = filter(panel_a_medians, group == "Y-type"),
+               aes(x = x - 0.17, xend = x + 0.17, y = med, yend = med),
+               colour = ytype_colour, linewidth = 1.3) +
+  # R-type label fixed above its tick, Y-type label fixed below its tick:
+  # a constant visual offset (in text-height units via vjust) keeps the
+  # two labels apart regardless of how close the two medians happen to
+  # be numerically, without encroaching on the neighbouring side's space.
+  # Black text (not colour-matched) for legibility against both the
+  # point cloud and the light-green tick colour.
+  geom_text(data = filter(panel_a_medians, group == "R-type"),
+            aes(x = x, y = med, label = label),
+            vjust = -1.0, size = 3.2, fontface = "bold", colour = "black") +
+  geom_text(data = filter(panel_a_medians, group == "Y-type"),
+            aes(x = x, y = med, label = label),
+            vjust = 2.0, size = 3.2, fontface = "bold", colour = "black") +
+  scale_colour_manual(values = clade_colours, name = "Donor clade\n(Loop 7 origin)") +
+  scale_x_continuous(
+    breaks = c(x0 - 0.2, x0 + 0.2),
+    labels = c("Chimera", "WT"),
+    limits = c(x0 - 0.55, x0 + 0.55)
+  ) +
+  labs(
+    x = NULL, y = "pLDDT", title = "A",
+    caption = sprintf(
+      "R vs Y, chimera: %s\nR vs Y, WT: %s",
+      p_label, p_label_wt
+    )
+  ) +
+  coord_cartesian(ylim = c(50, 100)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "none",  # shared legend is shown once, via Panel C
+    plot.title         = element_text(face = "bold"),
+    plot.caption       = element_text(hjust = 0, size = 9, colour = "grey30")
+  )
+
+############################################################
+# PANEL C: per-clade split violins (not pooled)
+############################################################
+clade_order <- df_stat %>%
+  group_by(Assigned_clade) %>%
+  summarise(med = median(pLDDT_replacement), .groups = "drop") %>%
+  mutate(clade_num = as.numeric(gsub("Clade_", "", Assigned_clade))) %>%
+  arrange(clade_num)
+
+clade_levels <- clade_order$Assigned_clade
+x_lookup <- setNames(seq_along(clade_levels), clade_levels)
+
+df_c <- df_stat %>% mutate(x0c = x_lookup[Assigned_clade])
+
+violin_list <- lapply(clade_levels, function(cl) {
+  sub <- df_c %>% filter(Assigned_clade == cl)
+  x0c <- x_lookup[cl]
+  list(
+    chimera = half_violin_polygon(sub$pLDDT_replacement, x0 = x0c, side = -1, scale_to = 0.35),
+    wt      = half_violin_polygon(sub$pLDDT,             x0 = x0c, side = +1, scale_to = 0.35)
+  )
+})
+
+violins_c_chimera <- bind_rows(lapply(seq_along(violin_list), function(i) {
+  v <- violin_list[[i]]$chimera
+  if (!is.null(v)) v$clade <- clade_levels[i]
+  v
+}))
+violins_c_wt <- bind_rows(lapply(seq_along(violin_list), function(i) {
+  v <- violin_list[[i]]$wt
+  if (!is.null(v)) v$clade <- clade_levels[i]
+  v
+}))
+
+set.seed(1)
+points_c_chimera_all <- df_c %>% mutate(x_jit = x0c - 0.06 - runif(n(), 0, 0.14), y = pLDDT_replacement)
+points_c_wt_all      <- df_c %>% mutate(x_jit = x0c + 0.06 + runif(n(), 0, 0.14), y = pLDDT)
+
+points_c_chimera    <- points_c_chimera_all %>% filter(Full_name != highlight_id)
+points_c_chimera_hl <- points_c_chimera_all %>% filter(Full_name == highlight_id)
+points_c_wt         <- points_c_wt_all %>% filter(Full_name != highlight_id)
+points_c_wt_hl      <- points_c_wt_all %>% filter(Full_name == highlight_id)
+
+medians_c <- df_c %>%
+  group_by(Assigned_clade, x0c) %>%
+  summarise(chimera_median = median(pLDDT_replacement), wt_median = median(pLDDT), .groups = "drop")
+
+panel_c <- ggplot() +
+  geom_polygon(data = violins_c_chimera, aes(x = x, y = y, group = clade, fill = clade),
+               colour = "grey40", linewidth = 0.3, alpha = 0.25) +
+  geom_polygon(data = violins_c_wt, aes(x = x, y = y, group = clade, fill = clade),
+               colour = "grey40", linewidth = 0.3, alpha = 0.25) +
+  geom_point(data = points_c_chimera, aes(x = x_jit, y = y, colour = Assigned_clade),
+             shape = 16, size = 1.8, alpha = 0.8) +
+  geom_point(data = points_c_wt, aes(x = x_jit, y = y, colour = Assigned_clade),
+             shape = 17, size = 1.8, alpha = 0.8) +
+  geom_point(data = points_c_chimera_hl, aes(x = x_jit, y = y), colour = "black", shape = 16, size = 3) +
+  geom_point(data = points_c_wt_hl, aes(x = x_jit, y = y), colour = "black", shape = 17, size = 3) +
+  geom_segment(data = medians_c,
+               aes(x = x0c - 0.22, xend = x0c - 0.01, y = chimera_median, yend = chimera_median),
+               colour = "black", linewidth = 1.1) +
+  geom_segment(data = medians_c,
+               aes(x = x0c + 0.01, xend = x0c + 0.22, y = wt_median, yend = wt_median),
+               colour = "black", linewidth = 1.1) +
+  scale_fill_manual(values = clade_colours, guide = "none") +
+  scale_colour_manual(values = clade_colours, name = "Donor clade\n(Loop 7 origin)") +
+  scale_x_continuous(breaks = seq_along(clade_levels), labels = clade_levels, expand = expansion(add = 0.6)) +
+  labs(
+    x = NULL, y = "pLDDT", title = "C",
+    caption = "Circle = chimera; triangle = WT.\nTicks mark each side's median."
+  ) +
+  coord_cartesian(ylim = c(50, 100)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    legend.position     = "right",
+    plot.title          = element_text(face = "bold"),
+    plot.caption        = element_text(hjust = 0, size = 9, colour = "grey30")
+  )
+
+############################################################
+# PANEL B: Delta, R-type vs Y-type
+############################################################
+delta_violin_r  <- half_violin_polygon(r_delta, x0 = 1, side = -1, scale_to = 0.4)
+delta_violin_y  <- half_violin_polygon(y_delta, x0 = 2, side = -1, scale_to = 0.4)
+delta_violin_r2 <- half_violin_polygon(r_delta, x0 = 1, side = +1, scale_to = 0.4)
+delta_violin_y2 <- half_violin_polygon(y_delta, x0 = 2, side = +1, scale_to = 0.4)
+
+set.seed(2)
+delta_points_all <- df_stat %>%
+  mutate(
+    x0    = ifelse(loop_type == "R-type", 1, 2),
+    x_jit = x0 + runif(n(), -0.3, 0.3),
+    y     = pLDDT_replacement - pLDDT   # Chimera - WT
+  )
+
+delta_points    <- delta_points_all %>% filter(Full_name != highlight_id)
+delta_points_hl <- delta_points_all %>% filter(Full_name == highlight_id)
+
+sig_annot <- data.frame(
+  x = c(1, 2),
+  y = c(max(r_delta, na.rm = TRUE), max(y_delta, na.rm = TRUE)) + 2,
+  label = c(r_stars, y_stars)
+)
+
+delta_medians <- data.frame(
+  x    = c(1, 2),
+  med  = c(median(r_delta), median(y_delta))
+) %>%
+  mutate(label = sprintf("%.1f", med))
+
+panel_b <- ggplot() +
+  geom_polygon(data = delta_violin_r,  aes(x = x, y = y), fill = "grey85", colour = "grey40", linewidth = 0.3) +
+  geom_polygon(data = delta_violin_r2, aes(x = x, y = y), fill = "grey85", colour = "grey40", linewidth = 0.3) +
+  geom_polygon(data = delta_violin_y,  aes(x = x, y = y), fill = "grey85", colour = "grey40", linewidth = 0.3) +
+  geom_polygon(data = delta_violin_y2, aes(x = x, y = y), fill = "grey85", colour = "grey40", linewidth = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_point(data = delta_points, aes(x = x_jit, y = y, colour = Assigned_clade),
+             size = 2, alpha = 0.85) +
+  geom_point(data = delta_points_hl, aes(x = x_jit, y = y), colour = "black", size = 3) +
+  geom_segment(data = delta_medians,
+               aes(x = x - 0.4, xend = x + 0.4, y = med, yend = med),
+               colour = "black", linewidth = 1.1) +
+  geom_text(data = delta_medians,
+            aes(x = x + 0.45, y = med, label = label),
+            hjust = 0, size = 3.8, fontface = "bold", colour = "black") +
+  geom_text(data = sig_annot, aes(x = x, y = y, label = label), size = 5, fontface = "bold") +
+  scale_colour_manual(values = clade_colours, name = "Donor clade\n(Loop 7 origin)") +
+  scale_x_continuous(breaks = c(1, 2), labels = c("R-type", "Y-type"), limits = c(0.4, 2.9)) +
+  scale_y_continuous(expand = expansion(mult = 0.15)) +
+  labs(
+    x = NULL, y = expression(Delta * " pLDDT  (Chimera " - " WT)"),
+    title = "B",
+    caption = sprintf(
+      "Between groups: %s\nR-type vs Y-type: %s\nWithin group vs 0: R %s / Y %s",
+      test_method_d, p_label_d, r_vs_zero$p_lab, y_vs_zero$p_lab
+    )
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "none",
+    plot.title         = element_text(face = "bold"),
+    plot.caption       = element_text(hjust = 0, size = 9, colour = "grey30")
+  )
+
+############################################################
+# COMBINE: order A - C - B, shared legend
+############################################################
+combined <- panel_a + panel_c + panel_b +
+  plot_layout(widths = c(1, 2.2, 1))
+
+print(combined)
+
+ggsave("loop7_combined_ACB.svg", combined, width = 18, height = 7)
+ggsave("loop7_combined_ACB.png", combined, width = 18, height = 7, dpi = 300)
+
+############################################################
+# END
+############################################################
