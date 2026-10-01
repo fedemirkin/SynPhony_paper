@@ -1,0 +1,221 @@
+##################################
+# Loop 7 swap tolerance: PER-CLADE split violin plot
+#
+# Companion to loop7_split_violin.R. Instead of pooling donor
+# clades into R-type / Y-type groups, this script shows each
+# individual clade's own distribution side by side, so the
+# within-group heterogeneity explored statistically in the
+# main script (Kruskal-Wallis, per-clade summary, post-hoc
+# tests) can also be seen directly.
+#
+# For each clade, at its own x position:
+#   left half  = chimera pLDDT (SAP05 + that clade's Loop 7)
+#   right half = WT pLDDT (that clade's own native domains)
+#
+# Clades are ordered left-to-right numerically (Clade_1, Clade_2,
+# ... Clade_10), for easy cross-reference with other figures.
+#
+# No extra packages beyond ggplot2 + dplyr are required.
+############################################################
+ 
+library(ggplot2)
+library(dplyr)
+ 
+# ------------------------------------------------------------
+# 0. Load data
+# ------------------------------------------------------------
+# Expected columns: Full_name, Assigned_clade, pLDDT,
+#                    pLDDT_replacement, Delta
+ 
+# df <- read.csv("loop7_swap_data.csv", stringsAsFactors = FALSE)
+ 
+# ------------------------------------------------------------
+# 1. Clade colours (match Fig 1A / S6 Fig / loop7_split_violin.R)
+# ------------------------------------------------------------
+clade_colours <- c(
+  "Clade_1"  = "#ff8080",
+  "Clade_2"  = "#ff9955",
+  "Clade_3"  = "#ffcc00",
+  "Clade_4"  = "#ff2a7f",
+  "Clade_5"  = "#e9afdd",
+  "Clade_6"  = "#8080ff",
+  "Clade_7"  = "#00aad4",
+  "Clade_8"  = "#2ca089",
+  "Clade_9"  = "#7f2a7f",
+  "Clade_10" = "#aad400"
+)
+ 
+# Protein to highlight in black, drawn on top of all other points
+# (WP_011412316.1 corresponds to canonical SAP05 itself)
+highlight_id <- "WP_011412316.1"
+ 
+# Which clades to include/exclude from this plot. By default, every
+# clade present in the data is shown; set this to a vector of clade
+# names (e.g. r_type_clades/y_type_clades from the main script) to
+# restrict the plot, or leave as NULL to show everything.
+clades_to_show <- NULL   # e.g. c(paste0("Clade_", 1:7), "Clade_10")
+ 
+# ------------------------------------------------------------
+# 2. Density helper: build a mirrored half-violin polygon
+# ------------------------------------------------------------
+half_violin_polygon <- function(values, x0, side, scale_to = 0.35) {
+ 
+  values <- values[is.finite(values)]
+  if (length(values) < 2) return(NULL)
+ 
+  # clamp the density estimate to the real data range so the violin
+  # cannot be drawn extending past actual min/max values (density()
+  # otherwise extrapolates ~3 bandwidths beyond the data by default,
+  # which for a bounded score like pLDDT can visually exceed 100)
+  d <- density(values, n = 256, from = min(values), to = max(values))
+  w <- d$y / max(d$y) * scale_to
+ 
+  data.frame(
+    x = c(x0, x0 + side * w, x0),
+    y = c(min(d$x), d$x, max(d$x))
+  )
+}
+ 
+# ------------------------------------------------------------
+# 3. Prepare data: filter, order clades numerically (Clade_1 to Clade_10)
+# ------------------------------------------------------------
+df_plot <- df
+if (!is.null(clades_to_show)) {
+  df_plot <- df_plot %>% filter(Assigned_clade %in% clades_to_show)
+}
+ 
+clade_order <- df_plot %>%
+  group_by(Assigned_clade) %>%
+  summarise(med = median(pLDDT_replacement), n = n(), .groups = "drop") %>%
+  mutate(clade_num = as.numeric(gsub("Clade_", "", Assigned_clade))) %>%
+  arrange(clade_num)
+ 
+print(clade_order)
+ 
+clade_levels <- clade_order$Assigned_clade
+x_lookup <- setNames(seq_along(clade_levels), clade_levels)
+ 
+df_plot <- df_plot %>%
+  mutate(x0 = x_lookup[Assigned_clade])
+ 
+# ------------------------------------------------------------
+# 4. Build one split-violin pair per clade
+# ------------------------------------------------------------
+violin_list <- lapply(clade_levels, function(cl) {
+  sub <- df_plot %>% filter(Assigned_clade == cl)
+  x0  <- x_lookup[cl]
+ 
+  list(
+    chimera = half_violin_polygon(sub$pLDDT_replacement, x0 = x0, side = -1),
+    wt      = half_violin_polygon(sub$pLDDT,             x0 = x0, side = +1)
+  )
+})
+ 
+violins_chimera <- bind_rows(
+  lapply(seq_along(violin_list), function(i) {
+    v <- violin_list[[i]]$chimera
+    if (!is.null(v)) v$clade <- clade_levels[i]
+    v
+  })
+)
+ 
+violins_wt <- bind_rows(
+  lapply(seq_along(violin_list), function(i) {
+    v <- violin_list[[i]]$wt
+    if (!is.null(v)) v$clade <- clade_levels[i]
+    v
+  })
+)
+ 
+# ------------------------------------------------------------
+# 5. Jittered points for each side, per clade
+# ------------------------------------------------------------
+set.seed(1)
+ 
+points_chimera_all <- df_plot %>%
+  mutate(
+    x_jit = x0 - 0.06 - runif(n(), 0, 0.14),
+    y     = pLDDT_replacement,
+    side  = "Chimera"
+  )
+ 
+points_wt_all <- df_plot %>%
+  mutate(
+    x_jit = x0 + 0.06 + runif(n(), 0, 0.14),
+    y     = pLDDT,
+    side  = "WT"
+  )
+ 
+points_chimera    <- points_chimera_all %>% filter(Full_name != highlight_id)
+points_chimera_hl <- points_chimera_all %>% filter(Full_name == highlight_id)
+points_wt         <- points_wt_all %>% filter(Full_name != highlight_id)
+points_wt_hl      <- points_wt_all %>% filter(Full_name == highlight_id)
+ 
+# ------------------------------------------------------------
+# 6. Median tick marks for each clade/side (small horizontal bars)
+# ------------------------------------------------------------
+medians_df <- df_plot %>%
+  group_by(Assigned_clade, x0) %>%
+  summarise(
+    chimera_median = median(pLDDT_replacement),
+    wt_median      = median(pLDDT),
+    .groups = "drop"
+  )
+ 
+# ------------------------------------------------------------
+# 7. Plot
+# ------------------------------------------------------------
+p <- ggplot() +
+ 
+  # half-violin shapes, coloured lightly by clade for visual grouping
+  geom_polygon(data = violins_chimera,
+               aes(x = x, y = y, group = clade, fill = clade),
+               colour = "grey40", linewidth = 0.3, alpha = 0.25) +
+  geom_polygon(data = violins_wt,
+               aes(x = x, y = y, group = clade, fill = clade),
+               colour = "grey40", linewidth = 0.3, alpha = 0.25) +
+ 
+  # points
+  geom_point(data = points_chimera, aes(x = x_jit, y = y, colour = Assigned_clade),
+             size = 1.8, alpha = 0.8) +
+  geom_point(data = points_wt, aes(x = x_jit, y = y, colour = Assigned_clade),
+             size = 1.8, alpha = 0.8, shape = 17) +   # triangle = WT, circle = chimera
+ 
+  # SAP05 itself, drawn on top of the clade-coloured points
+  geom_point(data = points_chimera_hl, aes(x = x_jit, y = y),
+             colour = "black", size = 3) +
+  geom_point(data = points_wt_hl, aes(x = x_jit, y = y),
+             colour = "black", size = 3, shape = 17) +
+ 
+  # median tick marks, drawn last so they sit on top of every point
+  geom_segment(data = medians_df,
+               aes(x = x0 - 0.22, xend = x0 - 0.01, y = chimera_median, yend = chimera_median),
+               colour = "black", linewidth = 1.1) +
+  geom_segment(data = medians_df,
+               aes(x = x0 + 0.01, xend = x0 + 0.22, y = wt_median, yend = wt_median),
+               colour = "black", linewidth = 1.1) +
+ 
+  scale_fill_manual(values = clade_colours, guide = "none") +
+  scale_colour_manual(values = clade_colours, name = "Donor clade\n(Loop 7 origin)") +
+ 
+  scale_x_continuous(
+    breaks = seq_along(clade_levels),
+    labels = clade_levels,
+    expand = expansion(add = 0.6)
+  ) +
+ 
+  labs(
+    x = NULL, y = "pLDDT",
+    caption = "Circle = chimera (SAP05 + donor Loop 7); triangle = WT (donor's own native domain).\nHorizontal ticks mark each side's median."
+  ) +
+  coord_cartesian(ylim = c(50, 100)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor    = element_blank(),
+    axis.text.x         = element_text(angle = 45, hjust = 1),
+    legend.position      = "right",
+    plot.caption         = element_text(hjust = 0, size = 9, colour = "grey30")
+  )
+ 
+print(p)
